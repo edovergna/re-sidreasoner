@@ -1,0 +1,33 @@
+#!/bin/bash
+# Download an Amazon review dataset via SIDReasoner's data pipeline.
+#
+# Submit from the repo root:
+#   sbatch --export=DATASET=Video_Games          jobs/download_amazon.sbatch
+#   sbatch --export=DATASET=Office_Products      jobs/download_amazon.sbatch
+#   sbatch --export=DATASET=Industrial_and_Scientific jobs/download_amazon.sbatch
+
+#SBATCH --partition=rome
+#SBATCH --job-name=sid-download-amazon
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=4
+#SBATCH --time=02:00:00
+#SBATCH --output=jobs/outputs/%x-%j.out
+#SBATCH --error=jobs/outputs/%x-%j.err
+
+set -euo pipefail
+
+if [[ -n "${SLURM_SUBMIT_DIR:-}" ]]; then
+    cd "${SLURM_SUBMIT_DIR}"
+fi
+
+if [[ -z "${DATASET:-}" ]]; then
+    echo "[error] DATASET env variable not set."
+    echo "        Pass via: sbatch --export=DATASET=Video_Games jobs/download_amazon.sbatch"
+    echo "        Available: Video_Games  Office_Products  Industrial_and_Scientific"
+    exit 1
+fi
+
+echo "[download_amazon] Dataset:  ${DATASET}"
+echo "[download_amazon] Job ID:   ${SLURM_JOB_ID:-local}"
+
+bash scripts/data_prep/download_amazon.sh "${DATASET}"

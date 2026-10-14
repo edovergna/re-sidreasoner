@@ -1,0 +1,86 @@
+#!/bin/bash
+# Think-mode evaluation of the A0–A3 GRPO reward experiments (Games).
+#
+# Runs scripts/common/eval/evaluate.py (run_eval_think) on each merged S3 checkpoint to
+# produce NDCG@{5,10} / HR@{5,10} ranking metrics from held-out predictions.
+#
+# This is a SLURM ARRAY job: one array task per checkpoint, each on its own single
+# H100, so all six evals run in parallel. For each S3 (RL) condition the job first
+# merges the latest verl FSDP actor shards (global_step_100/actor) into a single HF
+# model, then evaluates with vLLM thinking-mode generation.
+#
+# WHY GPU (not the 'rome' CPU partition): evaluate_Qwen3_think.py loads the model
+# with vLLM (`LLM(..., tensor_parallel_size=1)`) and does batched autoregressive
+# generation over the full ~6.1k-example test set. vLLM requires CUDA; this is not a
+# CPU-partition workload.
+#
+# Usage (from repo root) — run all six A0-A3 evals:
+#   sbatch jobs/grpo/reward_eval.job
+#
+# Run a single condition instead (e.g. just A0, array index 0):
+#   sbatch --array=0 jobs/grpo/reward_eval.job
+
+#SBATCH --partition=gpu_h100
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --gpus=1
+#SBATCH --cpus-per-task=16
+#SBATCH --time=03:00:00
+#SBATCH --job-name=grpo-reward-eval
+#SBATCH --array=0-5
+#SBATCH --output=jobs/outputs/%x-%A_%a.out
+#SBATCH --error=jobs/outputs/%x-%A_%a.err
+
+set -euo pipefail
+
+if [[ -n "${SLURM_SUBMIT_DIR:-}" ]]; then
+    cd "${SLURM_SUBMIT_DIR}"
+fi
+
+# ------------------------------------------------------------------
+# A0-A3 conditions (one per array index).
+# A2 l=0.2 (a2_l02_games) is excluded: it was never trained (dry run only).
+# ------------------------------------------------------------------
+CONFIGS=(
+    configs/grpo/a0_baseline/games.yaml          # A0  baseline  (R_sr + 0.1 R_f)
+    configs/grpo/a1_no_format/games.yaml         # A1  no format (lambda = 0)
+    configs/grpo/a2_lambda_sweep/games_l005.yaml # A2  lambda = 0.05
+    configs/grpo/a2_lambda_sweep/games_l05.yaml  # A2  lambda = 0.5
+    configs/grpo/a2_lambda_sweep/games_l10.yaml  # A2  lambda = 1.0
+    configs/grpo/a3_linear_acc/games.yaml        # A3  linear/partial-credit accuracy
+)
+
+IDX="${SLURM_ARRAY_TASK_ID:-0}"
+CONFIG="${CONFIGS[$IDX]}"
+
+# Point uv at the venv built by setup_env.sh (inside the submodule, not repo root).
+export UV_PROJECT_ENVIRONMENT="${UV_PROJECT_ENVIRONMENT:-$(pwd)/baselines/repos/SIDReasoner/.venv}"
+
+# Apply local submodule modifications (kept as a patch in this repo). Must run
+# before sourcing cluster_env.sh — the patch edits it.
+bash scripts/common/apply_submodule_patch.sh
+
+# Load the cluster modules and set TORCHRUN_CMD / PYTHON_CMD.
+source baselines/repos/SIDReasoner/scripts/cluster_env.sh
+
+# PYTHONPATH must include BOTH:
+#  - the SIDReasoner submodule root, so the `verl` source tree (used by
+#    scripts/merge_fsdp_checkpoint.py to merge the FSDP actor shards) is
+#    importable. verl is NOT pip-installed; training finds it via `python -m`
+#    (cwd on sys.path), but the merge runs as a script file, so we add it here.
+#  - the OUTER repo root, so the custom reward / `src.*` imports resolve.
+export PYTHONPATH="$(pwd)/baselines/repos/SIDReasoner:$(pwd)${PYTHONPATH:+:${PYTHONPATH}}"
+
+echo "[grpo_reward_eval] Array task : ${IDX}"
+echo "[grpo_reward_eval] Config     : ${CONFIG}"
+echo "[grpo_reward_eval] Job ID     : ${SLURM_ARRAY_JOB_ID:-local}_${IDX}"
+echo "[grpo_reward_eval] Repo root  : $(pwd)"
+echo "[grpo_reward_eval] Date       : $(date)"
+
+# evaluate.py auto-selects think-mode (S3 enabled), merges the latest verl FSDP
+# checkpoint (global_step_100/actor -> actor_merged), runs vLLM generation, then
+# calc.py for NDCG/HR. Metrics print to this log; predictions land at
+# <output_root>/eval_predictions.json.
+${PYTHON_CMD} scripts/common/eval/evaluate.py --config "${CONFIG}"
+
+echo "[grpo_reward_eval] Finished   : $(date)"

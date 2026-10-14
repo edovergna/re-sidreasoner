@@ -1,0 +1,63 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+.venv/
+venv/
+env/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# ML / experiment artifacts
+*.ckpt
+*.pt
+*.pth
+*.bin
+*.safetensors
+wandb/
+runs/
+outputs/
+checkpoints/
+logs/
+
+# Training checkpoints produced by GRPO runs (large; not pushed)
+stage3_rl/
+global_step_*/
+results/grpo/*/stage3_rl/
+results/grpo/*/eval_predictions.json
+
+# Data (large files)
+data/
+*.jsonl
+*.parquet
+*.arrow
+*.csv
+
+
+
+# SLURM
+jobs/outputs/
+*.out
+*.err
+slurm_output/
+
+
+
+# Local run notes (not tracked)
+TO-RUN.md
+NEXT.md
+to_run.txt
+
+# OS
+.DS_Store
+
+.cache/
+paper.txt

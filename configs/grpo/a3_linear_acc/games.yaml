@@ -1,0 +1,43 @@
+# A3 Linear / partial-credit accuracy.
+# Change   : R_sr = 0.33·[a1=g1] + 0.33·[a1=g1 & a2=g2] + 0.34·[all match]
+#            (additive, not multiplicative)
+# Hypothesis: Does softer, more linear shaping beat the steep ×2 doubling?
+#             Reduces reward sparsity by giving more uniform credit for partial
+#             SID matches.
+
+experiment:
+  name: grpo_a3_linear_acc_games
+  dataset: games
+  dataset_category: Video_Games
+  description: "A3: Linear additive accuracy reward (no multiplicative doubling)"
+
+model:
+  backbone: Qwen/Qwen3-1.7B
+
+stages:
+  s1:
+    enabled: false
+  s2:
+    enabled: false
+  s3:
+    enabled: true
+    total_epochs: 5
+    max_steps: 100  # RQ3 / Appendix C optimizer-step budget
+    n_gpus_per_node: 4
+    start_checkpoint: data/checkpoints/sidreasoner_ra_games
+
+paths:
+  sid_reasoner_root: baselines/repos/SIDReasoner
+  train_file:        data/raw/games/train/Video_Games_5_2016-10-2018-11.csv
+  eval_file:         data/raw/games/valid/Video_Games_5_2016-10-2018-11.csv
+  test_file:         data/raw/games/test/Video_Games_5_2016-10-2018-11.csv
+  info_file:         data/raw/games/info/Video_Games_5_2016-10-2018-11.txt
+  item_meta:         data/raw/games/index/Video_Games.item.json
+  sid_index:         data/raw/games/index/Video_Games.index.json
+  llm_items:         data/raw/games/index/Video_Games.item_enhanced_v2.json
+  llm_seqs:          data/raw/games/index/Video_Games.integrated_narrative.csv
+  general_reasoning: data/raw/games/general/sampled_data.arrow
+  rl_train_parquet:  data/raw/games/rec_reasoning_verl/Video_Games/train.parquet
+  rl_val_parquet:    data/raw/games/rec_reasoning_verl/Video_Games/test.parquet
+  reward_fn:         src/grpo/reward_shims/a3_linear_acc_games.py
+  output_root:       results/grpo/a3_linear_acc_games

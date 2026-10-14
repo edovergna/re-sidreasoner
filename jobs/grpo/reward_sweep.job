@@ -1,0 +1,123 @@
+#!/bin/bash
+# Run the six paper RQ3 reward variants (A0–A3), Games only.
+#
+# Each variant is one S3-only GRPO run starting from the RA checkpoint.
+# The script loops over all config files under configs/grpo/
+# and submits them in sequence via train_pipeline.py.
+#
+# Adjust --time and GPU resources to your allocation.
+#
+# Usage (from repo root):
+#   sbatch jobs/grpo/reward_sweep.job
+#
+# To run a single variant instead (recommended for first-pass screening):
+#   sbatch --export=ALL,CONFIG=configs/grpo/a1_no_format/games.yaml \
+#          jobs/grpo/reward_sweep.job
+
+#SBATCH --partition=gpu_h100
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --gpus-per-node=4
+#SBATCH --cpus-per-task=64
+#SBATCH --time=24:00:00
+#SBATCH --job-name=grpo-reward-sweep
+#SBATCH --output=jobs/outputs/%x-%j.out
+#SBATCH --error=jobs/outputs/%x-%j.err
+
+# Appendix C specifies four H100 GPUs. Override --partition at submission
+# if using different hardware, and record that deviation with the run.
+# The configs cap training at 100 steps; GRPO_MAX_STEPS_OVERRIDE changes the cap.
+#
+# Optional first-pass screening: pass EPOCHS=N to override stages.s3.total_epochs
+# without editing the (canonical 5-epoch) configs, e.g.:
+#   sbatch --export=ALL,CONFIG=<cfg>,EPOCHS=2 jobs/grpo/reward_sweep.job
+
+set -euo pipefail
+
+if [[ -n "${SLURM_SUBMIT_DIR:-}" ]]; then
+    cd "${SLURM_SUBMIT_DIR}"
+fi
+
+# Epoch override (screening sweeps): forwarded to the adapter via env var.
+if [[ -n "${EPOCHS:-}" ]]; then
+    export GRPO_EPOCHS_OVERRIDE="${EPOCHS}"
+    echo "[grpo_reward_sweep] Epoch override: total_epochs=${GRPO_EPOCHS_OVERRIDE}"
+fi
+
+export UV_PROJECT_ENVIRONMENT="${UV_PROJECT_ENVIRONMENT:-$(pwd)/baselines/repos/SIDReasoner/.venv}"
+source baselines/repos/SIDReasoner/scripts/cluster_env.sh
+
+# The S3 GRPO stage runs `python -m verl.trainer.main_ppo` with cwd set to the
+# SIDReasoner submodule (where the `verl` source tree lives). The custom reward
+# shims, however, do `from src.grpo.reward_variants import ...`, which resolves
+# against the OUTER repo root. Put the outer repo on PYTHONPATH so both imports work.
+export PYTHONPATH="$(pwd)${PYTHONPATH:+:${PYTHONPATH}}"
+
+# the cluster sets ROCR_VISIBLE_DEVICES (an AMD/ROCm variable) inside every GPU
+# allocation, even on NVIDIA partitions. Ray sets CUDA_VISIBLE_DEVICES per worker,
+# and verl refuses to start a worker when both are set ("Please don't set
+# ROCR_VISIBLE_DEVICES when HIP/CUDA_VISIBLE_DEVICES is set."). Drop the ROCm var.
+unset ROCR_VISIBLE_DEVICES
+
+# Isolate Ray resources for each H100 job, including reused physical nodes.
+# verl/Ray defaults its session root to /tmp/ray, so a stale dir from another job
+# causes "Failed to get register_center_actor ... lingering Ray resources". Give
+# each job its own Ray temp dir, keyed on the job id. Ray 2.47 honours RAY_TMPDIR.
+# Keep the path SHORT: Ray appends a ~66-char session/socket suffix and the plasma
+# store AF_UNIX socket path must stay under 107 bytes — so use /tmp (node-local,
+# ~17 chars here) rather than the long $TMPDIR (/scratch-local/<user>.<jobid>/...).
+export RAY_TMPDIR="/tmp/ray-${SLURM_JOB_ID:-$$}"
+mkdir -p "${RAY_TMPDIR}"
+echo "[grpo_reward_sweep] RAY_TMPDIR   : ${RAY_TMPDIR}"
+
+echo "[grpo_reward_sweep] Repo root   : $(pwd)"
+echo "[grpo_reward_sweep] Python       : ${PYTHON_CMD}"
+echo "[grpo_reward_sweep] CUDA devices : ${CUDA_VISIBLE_DEVICES:-all}"
+echo "[grpo_reward_sweep] Date         : $(date)"
+
+# ------------------------------------------------------------------
+# Config list
+#
+# Six conditions reported in revised Table 3. The unreported lambda=0.2
+# configuration is available via CONFIG but excluded from the default sweep.
+# ------------------------------------------------------------------
+
+# If a single config is passed via --export CONFIG=..., run only that one.
+if [[ -n "${CONFIG:-}" ]]; then
+    CONFIGS=("${CONFIG}")
+else
+    CONFIGS=(
+        # --- Priority 1: format-reward ablation ---
+        configs/grpo/a1_no_format/games.yaml
+        configs/grpo/a2_lambda_sweep/games_l005.yaml
+        configs/grpo/a2_lambda_sweep/games_l05.yaml
+        configs/grpo/a2_lambda_sweep/games_l10.yaml
+
+        # --- Priority 3: accuracy shaping ---
+        configs/grpo/a3_linear_acc/games.yaml
+
+        # --- Priority 5: baseline ---
+        configs/grpo/a0_baseline/games.yaml
+    )
+fi
+
+TOTAL=${#CONFIGS[@]}
+echo "[grpo_reward_sweep] Running ${TOTAL} config(s) sequentially."
+
+for i in "${!CONFIGS[@]}"; do
+    cfg="${CONFIGS[$i]}"
+    echo ""
+    echo "========================================================"
+    echo " Variant $((i+1))/${TOTAL}: ${cfg}"
+    echo " Started : $(date)"
+    echo "========================================================"
+
+    "${PYTHON_CMD}" scripts/common/train/train_pipeline.py \
+        --config "${cfg}" \
+        --repo-root "$(pwd)/baselines/repos/SIDReasoner"
+
+    echo " Finished: $(date)"
+done
+
+echo ""
+echo "[grpo_reward_sweep] All ${TOTAL} variants completed at $(date)."

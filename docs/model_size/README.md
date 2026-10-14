@@ -1,0 +1,145 @@
+# Model-size experiments
+
+SFT, RA, and GRPO runs on Games with Qwen3-0.6B and Qwen3-4B.
+Scripts are in `final_scripts/rq4_model_size/`.
+
+## Pipeline context
+
+We re-run the **full** S1 SFT → S2 reasoning-activation (RA) → S3 GRPO pipeline at two new
+backbone sizes and compare against the paper's single 1.7B model:
+
+| Stage | Name | Purpose |
+|-------|------|---------|
+| S1 | SFT (raw align) | Teach the model to emit valid Semantic IDs. |
+| S2 | RA | Generate a rationale inside `<think>…</think>`, then the SID (1- or 5-epoch ★ — the variant that feeds GRPO is size-dependent). |
+| S3 | GRPO | Reinforce reasoning toward correct recommendations. |
+
+Backbones: `Qwen3-0.6B` and `Qwen3-4B` (ours) vs `Qwen3-1.7B` (paper). Data: `Video
+Games`, S3 full-mix.
+
+## Experiments
+
+### M1 — GRPO dynamics
+
+Figure 2 reports R@10 and chain-of-thought length over 500 GRPO steps as mean ± std
+across three seeds each for 0.6B and 4B. Neither size consistently outperforms the
+other. The 1.7B reference curve is digitized from the original paper’s Figure 5.
+
+Results are in [`results_table.md`](results_table.md).
+
+### M2 — RA epoch count
+
+The RA checkpoint that feeds GRPO uses a size-dependent epoch count. Compare both:
+
+| Backbone | RA 1-epoch HR@10 | RA 5-epoch HR@10 | ★ feeds GRPO |
+|---|---|---|---|
+| 0.6B | 0.0495 | 0.0501 | 5-epoch |
+| 4B | 0.0532 | 0.0316 | 1-epoch |
+
+## Where the code lives
+
+The launch scripts are part of the **SIDReasoner submodule**, materialised by
+`patches/common/sidreasoner-local.patch` (same pattern as `rq2_components` /
+`rq5_diversity`). After applying the patch they sit under
+`baselines/repos/SIDReasoner/final_scripts/rq4_model_size/`, and the analysis tooling
+under the submodule's `utils/`. Run everything from the submodule root with
+`$PYTHON_CMD` (the venv) — sourcing `final_scripts/cluster_env.sh` sets it and unsets
+`ROCR_VISIBLE_DEVICES` (mandatory for GRPO to launch on the cluster).
+
+| Stage | Script (`final_scripts/rq4_model_size/`) |
+|-------|------------------------------------------|
+| alignment SFT | `sft_Qwen3_S3_0p6B_Games.sh` / `sft_Qwen3_S3_4B_Games.sh` |
+| reasoning activation | `sft_reasoning_activation_S3_0p6B_Games.sh` (5-ep ★) / `..._1ep.sh`; `..._4B_Games.sh` (5-ep) / `..._1ep.sh` (1-ep ★) |
+| GRPO | `RL_training_S3_0p6B_Games.sh` / `RL_training_S3_4B_Games.sh` |
+| eval | `evaluate_Qwen3_think_S3_0p6B_Games.sh` (+`_ALL`) / `..._4B_Games.sh` |
+
+★ = the reasoning-activation checkpoint that feeds GRPO (0.6B → 5-epoch, 4B → 1-epoch;
+RA epoch count is size-dependent).
+
+Key config (passed as CLI flags from the launch scripts): `batch_size 1024`,
+`micro_batch_size 8` (effective batch stays 1024 via gradient accumulation),
+`group_by_length True`; GRPO `train_batch_size=256`, `ppo_mini_batch_size=256`,
+`ppo_micro_batch_size_per_gpu=8`, `rollout.n=16`, `save_freq=100`, `test_freq=50`,
+`total_epochs=10`, `n_gpus_per_node=4`, reward `R_sr + λ·R_f` (λ=0.1). The 4B activation
+OOMs at `micro_batch_size 16` (by ~4.5 GiB) and is sharded over 4 GPUs.
+
+## Reproduce
+
+```bash
+bash scripts/common/apply_submodule_patch.sh
+cd baselines/repos/SIDReasoner
+source final_scripts/cluster_env.sh   # sets PYTHON_CMD; unsets ROCR_VISIBLE_DEVICES
+# one-time: uv pip install --python "$UV_PROJECT_ENVIRONMENT/bin/python" matplotlib huggingface_hub
+
+# Run per size; swap 0p6B <-> 4B. Each stage feeds the next.
+sbatch final_scripts/rq4_model_size/sft_Qwen3_S3_0p6B_Games.sh                    # 1. alignment SFT
+sbatch final_scripts/rq4_model_size/sft_reasoning_activation_S3_0p6B_Games.sh     # 2. activation (5-ep ★ for 0.6B)
+sbatch final_scripts/rq4_model_size/sft_reasoning_activation_S3_0p6B_Games_1ep.sh #    (1-ep variant)
+sbatch final_scripts/rq4_model_size/RL_training_S3_0p6B_Games.sh trainer.total_training_steps=500 # 3. GRPO
+
+# 4. merge verl checkpoints + eval every merged step
+bash   scripts/merge_fsdp_ckpt_ALL.sh                                  # global_step_N/actor -> actor_merged
+sbatch final_scripts/rq4_model_size/evaluate_Qwen3_think_S3_0p6B_Games_ALL.sh
+
+# 5. collect + plot
+$PYTHON_CMD utils/collect_eval_metrics.py --name_filter 0.6B --exclude act_1ep,reasoning_activation \
+    --info_file data/Amazon/info/Video_Games_5_2016-10-2018-11.txt \
+    --out results/figure5_0p6B.csv
+# Repeat collection for the 4B run; provide both training-length CSVs before plotting.
+$PYTHON_CMD utils/plot_size_comparison.py \
+    --csv_06b results/figure5_0p6B.csv --csv_4b results/figure5_4B.csv \
+    --cot_06b results/train_lengths_0p6B.csv --cot_4b results/train_lengths_4B.csv \
+    --cot_every 50 --metric HR@10 \
+    --out_recall results/recall_0p6B_vs_4B.png --out_cot results/cot_0p6B_vs_4B.png
+```
+
+The launchers default to ten epochs. Pass `trainer.total_training_steps=500`
+for the reported 500-step run length.
+
+Result CSV/PNG (`figure5_*.csv`, `train_lengths_*.csv`, `recall_*.png`, `cot_*.png`)
+are generated by steps 4–5 above and land in the submodule's `results/`.
+
+### Checkpoint export
+
+Export merged model weights separately from resumable training checkpoints.
+`utils/push_to_hf.py` requires an explicit destination and local checkpoint roots;
+use `--dry-run` to check its paths before uploading. Review model metadata for local
+paths and contributor details before preparing anonymous artifacts.
+
+## Training cost (Appendix D)
+
+| Backbone | Hardware | SFT GPU-hours | RA GPU-hours | GRPO GPU-hours | Total |
+|---|---|---|---|---|---|
+| 0.6B (ours) | 4 × H100 | 28.5 | 2.7 | 48.3 | 79.5 |
+| 4B (ours) | 4 × H100 | 50.0 | 0.3 | 148.0 | 198.3 |
+| 1.7B (original authors) | 8 × H20 | 20.0 | 5.0 | 100.0 | 125.0 |
+
+RA uses five epochs for 0.6B/1.7B and one for 4B; GPU counts and epoch counts are not matched.
+Our runs use H100s; Appendix D reports H20s for the original authors' 1.7B reference.
+Transformers **4.51.3** matches the patched lockfile and Appendix D.
+
+## Checkpoints
+
+Checkpoint download links will be added once the submission is public.
+
+*SIDReasoner-extensions/0.6B/SFT*
+
+*SIDReasoner-extensions/0.6B/RA*
+
+*SIDReasoner-extensions/0.6B/GRPO*
+
+*SIDReasoner-extensions/4B/SFT*
+
+*SIDReasoner-extensions/4B/RA*
+
+*SIDReasoner-extensions/4B/GRPO*
+
+## Reference files
+
+| Area | Path |
+|------|------|
+| Figure 2 results | [`results_table.md`](results_table.md) |
+| Checkpoints | See [checkpoint names](#checkpoints). |
+| Launch scripts (submodule) | `baselines/repos/SIDReasoner/final_scripts/rq4_model_size/` (via `patches/common/sidreasoner-local.patch`) |
+| Analysis tooling (submodule) | `utils/collect_eval_metrics.py`, `utils/plot_size_comparison.py`, `utils/push_to_hf.py` |
+| Result artifacts (submodule `results/`) | `figure5_*.csv`, `train_lengths_*.csv`, `recall_*.png`, `cot_*.png` |

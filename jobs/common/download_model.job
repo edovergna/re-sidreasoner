@@ -1,0 +1,39 @@
+#!/bin/bash
+# Pre-download Qwen/Qwen3-1.7B to the local HF cache before training jobs run.
+# Compute nodes on the cluster may not have outbound internet; run this from a
+# login/transfer node or a partition with internet access (e.g. rome).
+#
+# Submit from the repo root:
+#   sbatch jobs/common/download_model.job
+#
+# Override the model with:
+#   sbatch --export=MODEL=Qwen/Qwen3-1.7B jobs/common/download_model.job
+
+#SBATCH --partition=rome
+#SBATCH --job-name=sid-download-model
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=4
+#SBATCH --time=01:00:00
+#SBATCH --output=jobs/outputs/%x-%j.out
+#SBATCH --error=jobs/outputs/%x-%j.err
+
+set -euo pipefail
+
+if [[ -n "${SLURM_SUBMIT_DIR:-}" ]]; then
+    cd "${SLURM_SUBMIT_DIR}"
+fi
+
+MODEL="${MODEL:-Qwen/Qwen3-1.7B}"
+
+# cluster_env.sh sets HF_HOME / HF_HUB_CACHE; uv/torchrun detection is a side-effect we ignore here
+export PATH="${HOME}/.local/bin:${PATH}"
+source baselines/repos/SIDReasoner/scripts/cluster_env.sh
+
+echo "[download_model] Model:  ${MODEL}"
+echo "[download_model] Cache:  ${HF_HUB_CACHE}"
+echo "[download_model] Job ID: ${SLURM_JOB_ID:-local}"
+
+# uvx runs huggingface-cli in an isolated env — no project venv needed
+uvx --from huggingface_hub hf download "${MODEL}" --cache-dir "${HF_HUB_CACHE}"
+
+echo "[download_model] Done."

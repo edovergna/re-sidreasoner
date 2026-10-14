@@ -1,0 +1,25 @@
+#!/bin/bash
+# Download all heyingzhi SIDReasoner checkpoints to data/checkpoints/.
+#
+# Submit from repo root:
+#   sbatch jobs/common/download_checkpoints.job
+
+#SBATCH --partition=rome
+#SBATCH --job-name=sid-download-checkpoints
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=4
+#SBATCH --time=02:00:00
+#SBATCH --output=jobs/outputs/%x-%j.out
+#SBATCH --error=jobs/outputs/%x-%j.err
+
+set -euo pipefail
+
+if [[ -n "${SLURM_SUBMIT_DIR:-}" ]]; then
+    cd "${SLURM_SUBMIT_DIR}"
+fi
+
+echo "[download_checkpoints] Job ID: ${SLURM_JOB_ID:-local}"
+
+bash scripts/data_prep/download_checkpoints.sh
+
+echo "[download_checkpoints] Job complete."

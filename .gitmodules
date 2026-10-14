@@ -1,0 +1,10 @@
+[submodule "baselines/repos/SIDReasoner"]
+	path = baselines/repos/SIDReasoner
+	url = https://anonymous.4open.science/r/SIDReasoner-05B4/
+	# Local modifications are applied as a working-tree patch
+	# (patches/common/sidreasoner-local.patch); ignore the resulting dirty state so the
+	# submodule stays pinned to the upstream commit.
+	ignore = dirty
+[submodule "baselines/repos/SASRec"]
+	path = baselines/repos/SASRec
+	url = https://anonymous.4open.science/r/SASRec-1CE8/

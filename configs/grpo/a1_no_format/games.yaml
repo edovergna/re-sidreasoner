@@ -1,0 +1,41 @@
+# A1 No format term — S3-only from RA checkpoint.
+# Change   : R = R_sr  (λ = 0, format reward removed)
+# Hypothesis: Is the format reward actually helping, or does GRPO+KL already
+#             keep outputs valid without the explicit validity bonus?
+
+experiment:
+  name: grpo_a1_no_format_games
+  dataset: games
+  dataset_category: Video_Games
+  description: "A1: R=R_sr only (lambda=0), no format reward"
+
+model:
+  backbone: Qwen/Qwen3-1.7B
+
+stages:
+  s1:
+    enabled: false
+  s2:
+    enabled: false
+  s3:
+    enabled: true
+    total_epochs: 5
+    max_steps: 100  # RQ3 / Appendix C optimizer-step budget
+    n_gpus_per_node: 4
+    start_checkpoint: data/checkpoints/sidreasoner_ra_games
+
+paths:
+  sid_reasoner_root: baselines/repos/SIDReasoner
+  train_file:        data/raw/games/train/Video_Games_5_2016-10-2018-11.csv
+  eval_file:         data/raw/games/valid/Video_Games_5_2016-10-2018-11.csv
+  test_file:         data/raw/games/test/Video_Games_5_2016-10-2018-11.csv
+  info_file:         data/raw/games/info/Video_Games_5_2016-10-2018-11.txt
+  item_meta:         data/raw/games/index/Video_Games.item.json
+  sid_index:         data/raw/games/index/Video_Games.index.json
+  llm_items:         data/raw/games/index/Video_Games.item_enhanced_v2.json
+  llm_seqs:          data/raw/games/index/Video_Games.integrated_narrative.csv
+  general_reasoning: data/raw/games/general/sampled_data.arrow
+  rl_train_parquet:  data/raw/games/rec_reasoning_verl/Video_Games/train.parquet
+  rl_val_parquet:    data/raw/games/rec_reasoning_verl/Video_Games/test.parquet
+  reward_fn:         src/grpo/reward_shims/a1_no_format_games.py
+  output_root:       results/grpo/a1_no_format_games
